@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Student – Assignment System</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/main.css">
+  <style>
+    .upload-zone {
+      border: 2px dashed var(--border); border-radius:10px; padding:28px 20px;
+      text-align:center; cursor:pointer; transition:all 0.2s; position:relative;
+    }
+    .upload-zone:hover,.upload-zone.drag { border-color:var(--primary); background:var(--primary-light); }
+    .upload-zone input[type=file] { position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%; }
+    .upload-zone .uz-icon { font-size:32px; margin-bottom:10px; }
+    .upload-zone .uz-text { font-size:13px; color:var(--text-muted); }
+    .upload-zone .uz-sub  { font-size:11px; color:var(--text-subtle); margin-top:4px; }
+    .file-chosen { margin-top:10px; font-size:13px; color:var(--accent); display:none; }
+    .status-pill {
+      display:inline-flex;align-items:center;gap:6px;
+      padding:4px 12px; border-radius:100px; font-size:12px; font-weight:600;
+    }
+    .pill-pending  { background:rgba(245,158,11,0.12);color:#fcd34d; }
+    .pill-accepted { background:var(--accent-light);color:#6ee7b7; }
+    .pill-expired  { background:var(--input-bg);color:var(--text-muted); }
+  </style>
+</head>
+<body>
+<div class="app-layout">
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="icon">📚</div>
+      <div class="brand">Assignment<span>System</span></div>
+    </div>
+    <div class="sidebar-user">
+      <div class="user-name">{{ name }}</div>
+      <div class="user-role" style="color:var(--accent)">Student</div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section-title">Dashboard</div>
+      <button class="nav-item active" onclick="showSection('overview')"><span class="nav-icon">📊</span> Overview</button>
+      <button class="nav-item" onclick="showSection('classrooms')"><span class="nav-icon">🏫</span> My Classrooms</button>
+      <button class="nav-item" onclick="showSection('pending')"><span class="nav-icon">⏳</span> Pending</button>
+    </nav>
+    <div class="sidebar-footer"><button class="btn-logout" onclick="logout()">⬡ Sign Out</button></div>
+  </aside>
+
+  <main class="main-content">
+
+    <!-- ── OVERVIEW ── -->
+    <div id="section-overview">
+      <div class="top-bar"><div><h2>My Dashboard</h2><div class="subtitle">Track assignments and submissions</div></div></div>
+      <div class="page-content">
+        <div class="stats-grid">
+          <div class="stat-card" style="--accent-color:var(--primary)">
+            <div class="stat-icon">🏫</div><div class="stat-value" id="stat-cls">—</div><div class="stat-label">My Classrooms</div>
+          </div>
+          <div class="stat-card" style="--accent-color:var(--warning)">
+            <div class="stat-icon">⏳</div><div class="stat-value" id="stat-pend">—</div><div class="stat-label">Pending Submissions</div>
+          </div>
+          <div class="stat-card" style="--accent-color:var(--accent)">
+            <div class="stat-icon">✅</div><div class="stat-value" id="stat-done">—</div><div class="stat-label">Submitted</div>
+          </div>
+        </div>
+        <!-- Urgent deadlines -->
+        <div class="card">
+          <div class="card-title">⚠️ Urgent Deadlines <span style="font-size:12px;font-weight:400;color:var(--text-muted)">(within 48h)</span></div>
+          <div id="urgent-list" style="margin-top:14px"><span style="color:var(--text-muted);font-size:13px">Loading...</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CLASSROOMS ── -->
+    <div id="section-classrooms" style="display:none">
+      <div class="top-bar"><div><h2>My Classrooms</h2><div class="subtitle">All enrolled classrooms</div></div></div>
+      <div class="page-content">
+        <div id="classrooms-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px">
+          <div class="empty-state" style="grid-column:1/-1"><div class="icon">🏫</div><p>Loading...</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── PENDING ── -->
+    <div id="section-pending" style="display:none">
+      <div class="top-bar"><div><h2>Pending Assignments</h2><div class="subtitle">Upload your PDF before the deadline</div></div></div>
+      <div class="page-content">
+        <div id="pending-list"><div class="empty-state"><div class="icon">⏳</div><p>Loading...</p></div></div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Submit Modal (PDF upload) -->
+<div class="modal-overlay" id="modalSubmit">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Submit Assignment</div>
+      <button class="modal-close" onclick="closeModal('modalSubmit')">✕</button>
+    </div>
+    <!-- assignment info banner -->
+    <div id="modal-assign-info" style="background:var(--input-bg);border-radius:8px;padding:14px 16px;margin-bottom:20px;font-size:13px"></div>
+    <input type="hidden" id="sub-cid">
+    <input type="hidden" id="sub-aid">
+    <div class="form-group">
+      <label>Upload Your PDF <span style="color:var(--danger);font-weight:500">*</span></label>
+      <div class="upload-zone" id="upload-zone">
+        <input type="file" id="sub-file" accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
+               onchange="onFileChosen(this)" ondragover="this.parentElement.classList.add('drag')"
+               ondragleave="this.parentElement.classList.remove('drag')">
+        <div class="uz-icon">📄</div>
+        <div class="uz-text">Click to select your file or drag & drop here</div>
+        <div class="uz-sub">PDF, DOC, DOCX, TXT, PNG, JPG · Max 10 MB</div>
+      </div>
+      <div class="file-chosen" id="file-chosen-label"></div>
+    </div>
+    <!-- progress bar -->
+    <div id="upload-progress" style="display:none;margin-top:12px">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px" id="progress-label">Uploading to GitHub...</div>
+      <div style="background:var(--input-bg);border-radius:100px;height:6px;overflow:hidden">
+        <div id="progress-bar" style="height:100%;width:0%;background:var(--primary);transition:width 0.4s;border-radius:100px"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal('modalSubmit')">Cancel</button>
+      <button class="btn btn-success" id="btn-submit-final" onclick="submitAssignment()">Submit PDF →</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/common.js"></script>
+<script>
+  let classroomsData = [];
+
+  function showSection(name) {
+    ['overview','classrooms','pending'].forEach(s=>{
+      document.getElementById(`section-${s}`).style.display=s===name?'block':'none';
+    });
+    document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+    const idx = ['overview','classrooms','pending'].indexOf(name);
+    document.querySelectorAll('.nav-item')[idx]?.classList.add('active');
+    if (name==='classrooms') renderClassroomsGrid();
+    if (name==='pending')    renderPendingList();
+  }
+
+  async function loadData() {
+    const data = await apiCall('/api/student/classrooms');
+    if (data.success) { classroomsData=data.classrooms; updateStats(); renderUrgent(); }
+  }
+
+  function updateStats() {
+    let pend=0, done=0;
+    classroomsData.forEach(c=>(c.assignments||[]).forEach(a=>{ a.submitted?done++:pend++; }));
+    document.getElementById('stat-cls').textContent  = classroomsData.length;
+    document.getElementById('stat-pend').textContent = pend;
+    document.getElementById('stat-done').textContent = done;
+  }
+
+  function renderUrgent() {
+    const div=document.getElementById('urgent-list'), now=new Date(), soon=[];
+    classroomsData.forEach(c=>(c.assignments||[]).forEach(a=>{
+      if (!a.submitted&&a.deadline) {
+        const d=new Date(a.deadline), h=(d-now)/3600000;
+        if (h>0&&h<=48) soon.push({...a, classroom_name:c.name, classroom_id:c.classroom_id, hours:h});
+      }
+    }));
+    soon.sort((a,b)=>a.hours-b.hours);
+    if (!soon.length) { div.innerHTML='<span style="color:var(--accent);font-size:13px">✓ No urgent deadlines right now</span>'; return; }
+    div.innerHTML = soon.map(a=>{
+      const ds=getDeadlineStatus(a.deadline);
+      return `<div class="assignment-item" style="margin-bottom:8px">
+        <div>
+          <div class="title">📄 ${a.title}</div>
+          <div style="font-size:12px;color:var(--text-muted)">🏫 ${a.classroom_name}</div>
+          <div class="deadline ${ds.cls}">⏰ ${ds.label}</div>
+        </div>
+        <button class="btn btn-success btn-sm" onclick="openSubmit('${a.classroom_id}','${a.assignment_id}','${a.title}','${a.deadline}')">Upload PDF</button>
+      </div>`;
+    }).join('');
+  }
+
+  function renderClassroomsGrid() {
+    const grid=document.getElementById('classrooms-grid');
+    if (!classroomsData.length) {
+      grid.innerHTML=`<div class="empty-state" style="grid-column:1/-1"><div class="icon">🏫</div><p>Not enrolled in any classroom</p></div>`; return;
+    }
+    grid.innerHTML = classroomsData.map(c=>{
+      const pending=(c.assignments||[]).filter(a=>!a.submitted).length;
+      const total=(c.assignments||[]).length;
+      return `
+        <div class="classroom-card fade-in" onclick="toggleDetail('${c.classroom_id}')">
+          <div class="classroom-name">🏫 ${c.name}</div>
+          <div class="classroom-meta" style="margin-top:6px">By: ${c.professor_name||'Professor'}</div>
+          <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+            <span class="badge badge-neutral">${total} assignments</span>
+            ${pending>0?`<span class="badge badge-warning">⏳ ${pending} pending</span>`:`<span class="badge badge-success">✓ All done</span>`}
+          </div>
+          <div id="detail-${c.classroom_id}" style="display:none;margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
+            ${(c.assignments||[]).map(a=>{
+              const ds=getDeadlineStatus(a.deadline);
+              let statusHtml='';
+              if (a.submitted && a.accepted)
+                statusHtml=`<span class="status-pill pill-accepted">✓ Accepted</span>`;
+              else if (a.submitted)
+                statusHtml=`<span class="status-pill pill-pending">⏳ Under Review</span>`;
+              else
+                statusHtml=`<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openSubmit('${c.classroom_id}','${a.assignment_id}','${a.title}','${a.deadline}')">Upload PDF</button>`;
+              return `
+                <div class="assignment-item" style="margin-bottom:8px">
+                  <div>
+                    <div class="title">📄 ${a.title}</div>
+                    <div class="deadline ${ds.cls}">⏰ ${ds.label}</div>
+                  </div>
+                  ${statusHtml}
+                </div>`;
+            }).join('')}
+            ${!c.assignments?.length?'<p style="color:var(--text-muted);font-size:13px">No assignments yet</p>':''}
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  function toggleDetail(id) {
+    const el=document.getElementById(`detail-${id}`);
+    if (el) el.style.display=el.style.display==='none'?'block':'none';
+  }
+
+  function renderPendingList() {
+    const div=document.getElementById('pending-list'), pending=[];
+    classroomsData.forEach(c=>(c.assignments||[]).forEach(a=>{
+      if (!a.submitted) pending.push({...a,classroom_name:c.name,classroom_id:c.classroom_id});
+    }));
+    if (!pending.length) {
+      div.innerHTML=`<div class="empty-state"><div class="icon">🎉</div><p>All caught up! No pending submissions.</p></div>`; return;
+    }
+    div.innerHTML=pending.map(a=>{
+      const ds=getDeadlineStatus(a.deadline);
+      const expired=new Date(a.deadline)<new Date();
+      return `
+        <div class="assignment-item fade-in">
+          <div>
+            <div class="title">📄 ${a.title}</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:2px">🏫 ${a.classroom_name}</div>
+            <div class="deadline ${ds.cls}" style="margin-top:4px">⏰ ${ds.label}</div>
+          </div>
+          ${expired
+            ?`<span class="badge badge-danger">Deadline Passed</span>`
+            :`<button class="btn btn-success btn-sm" onclick="openSubmit('${a.classroom_id}','${a.assignment_id}','${a.title}','${a.deadline}')">Upload PDF</button>`
+          }
+        </div>`;
+    }).join('');
+  }
+
+  function openSubmit(cid, aid, title, deadline) {
+    document.getElementById('sub-cid').value = cid;
+    document.getElementById('sub-aid').value = aid;
+    document.getElementById('sub-file').value = '';
+    document.getElementById('file-chosen-label').style.display='none';
+    document.getElementById('upload-progress').style.display='none';
+    document.getElementById('progress-bar').style.width='0%';
+    const ds = getDeadlineStatus(deadline);
+    document.getElementById('modal-assign-info').innerHTML=`
+      <strong style="color:var(--text);font-size:14px">📄 ${title}</strong><br>
+      <span class="${ds.cls}" style="font-size:12px">⏰ Deadline: ${ds.label}</span><br>
+      <span style="font-size:11px;color:var(--text-muted);margin-top:6px;display:block">
+        Your PDF will be uploaded to GitHub and sent to your professor for review.
+      </span>`;
+    openModal('modalSubmit');
+  }
+
+  function onFileChosen(input) {
+    const el=document.getElementById('file-chosen-label');
+    if (input.files.length) {
+      const f=input.files[0];
+      const mb=(f.size/1048576).toFixed(2);
+      el.textContent=`📎 ${f.name}  (${mb} MB)`;
+      el.style.display='block';
+      if (f.size>10*1048576) { el.style.color='var(--danger)'; el.textContent+=' ← exceeds 10 MB limit'; }
+      else el.style.color='var(--accent)';
+    } else { el.style.display='none'; }
+  }
+
+  async function submitAssignment() {
+    const cid  = document.getElementById('sub-cid').value;
+    const aid  = document.getElementById('sub-aid').value;
+    const fileInput = document.getElementById('sub-file');
+    if (!fileInput.files.length) { showToast('Please select your PDF file','error'); return; }
+    if (fileInput.files[0].size>10*1048576) { showToast('File must be under 10 MB','error'); return; }
+
+    const btn = document.getElementById('btn-submit-final');
+    btn.disabled=true; btn.textContent='Uploading...';
+    document.getElementById('upload-progress').style.display='block';
+
+    // animate progress bar (fake progress while upload runs)
+    let pct=0;
+    const bar=document.getElementById('progress-bar');
+    const label=document.getElementById('progress-label');
+    const ticker=setInterval(()=>{ pct=Math.min(pct+Math.random()*8,88); bar.style.width=pct+'%'; },300);
+    label.textContent='Uploading to GitHub...';
+
+    const fd=new FormData();
+    fd.append('classroom_id', cid);
+    fd.append('assignment_id', aid);
+    fd.append('file', fileInput.files[0]);
+
+    try {
+      const res  = await fetch('/api/student/submit',{method:'POST',body:fd});
+      const data = await res.json();
+      clearInterval(ticker);
+      bar.style.width='100%';
+      label.textContent=data.success?'Upload complete!':'Upload failed';
+      setTimeout(()=>{
+        btn.disabled=false; btn.textContent='Submit PDF →';
+        document.getElementById('upload-progress').style.display='none';
+        if (data.success) {
+          showToast(data.message,'success');
+          closeModal('modalSubmit');
+          loadData().then(()=>{ renderClassroomsGrid(); renderPendingList(); });
+        } else { showToast(data.message,'error'); }
+      },600);
+    } catch(e) {
+      clearInterval(ticker);
+      btn.disabled=false; btn.textContent='Submit PDF →';
+      document.getElementById('upload-progress').style.display='none';
+      showToast('Network error: '+e.message,'error');
+    }
+  }
+
+  loadData();
+</script>
+</body>
+</html>
