@@ -1,15 +1,17 @@
 """
 app.py - Main Flask Application
-Online Assignment System with Email Alerts
+Online Assignment System with Cloudinary PDF Upload + Email Notifications
 """
 import os
 import hashlib
+import cloudinary
+import cloudinary.uploader
 from datetime import datetime, timezone
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from dotenv import load_dotenv
 from firebase_config import get_db, seed_admin
 from firebase_admin import firestore
-from utils.email_service import mail
+from utils.email_service import mail, send_deadline_reminder, send_classroom_invite, send_new_assignment, send_submission_notify
 from utils.scheduler import start_scheduler, stop_scheduler
 
 load_dotenv()
@@ -17,12 +19,20 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'supersecretkey-change-in-production')
 
-# Mail configuration
-app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
-app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
-app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'True') == 'True'
-app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME', '')
-app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD', '')
+# ── Cloudinary config ──────────────────────────────────────────────────────
+cloudinary.config(
+    cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
+    api_key=os.environ.get('CLOUDINARY_API_KEY'),
+    api_secret=os.environ.get('CLOUDINARY_API_SECRET'),
+    secure=True
+)
+
+# ── Mail config ────────────────────────────────────────────────────────────
+app.config['MAIL_SERVER']         = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
+app.config['MAIL_PORT']           = int(os.environ.get('MAIL_PORT', 587))
+app.config['MAIL_USE_TLS']        = os.environ.get('MAIL_USE_TLS', 'True') == 'True'
+app.config['MAIL_USERNAME']       = os.environ.get('MAIL_USERNAME', '')
+app.config['MAIL_PASSWORD']       = os.environ.get('MAIL_PASSWORD', '')
 app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_USERNAME', 'assignments@system.com')
 
 mail.init_app(app)
@@ -62,13 +72,13 @@ def login():
         return render_template('login.html')
 
     data = request.json
-    user_id = data.get('user_id', '').strip()
+    user_id  = data.get('user_id', '').strip()
     password = data.get('password', '').strip()
 
     if not user_id or not password:
         return jsonify({'success': False, 'message': 'User ID and password are required'})
 
-    db = get_db()
+    db       = get_db()
     user_doc = db.collection('users').document(user_id).get()
 
     if not user_doc.exists:
@@ -79,9 +89,9 @@ def login():
         return jsonify({'success': False, 'message': 'Invalid credentials'})
 
     session['user_id'] = user_id
-    session['role'] = user.get('role')
-    session['name'] = user.get('name')
-    session['email'] = user.get('email')
+    session['role']    = user.get('role')
+    session['name']    = user.get('name')
+    session['email']   = user.get('email')
 
     return jsonify({'success': True, 'role': user.get('role'), 'redirect': f"/{user.get('role')}"})
 
@@ -103,9 +113,9 @@ def admin_dashboard():
 @app.route('/api/admin/users', methods=['GET'])
 @login_required(role='admin')
 def get_users():
-    db = get_db()
+    db          = get_db()
     role_filter = request.args.get('role')
-    query = db.collection('users')
+    query       = db.collection('users')
     if role_filter:
         query = query.where('role', '==', role_filter)
     users = []
@@ -120,18 +130,17 @@ def get_users():
 @app.route('/api/admin/create_user', methods=['POST'])
 @login_required(role='admin')
 def create_user():
-    db = get_db()
-    data = request.json
-    role = data.get('role')
-    name = data.get('name', '').strip()
-    email = data.get('email', '').strip()
+    db         = get_db()
+    data       = request.json
+    role       = data.get('role')
+    name       = data.get('name', '').strip()
+    email      = data.get('email', '').strip()
     department = data.get('department', '').strip()
-    user_id = data.get('user_id', '').strip()
-    password = data.get('password', '').strip()
+    user_id    = data.get('user_id', '').strip()
+    password   = data.get('password', '').strip()
 
     if not all([role, name, email, user_id, password]):
         return jsonify({'success': False, 'message': 'All fields are required'})
-
     if role not in ['professor', 'student']:
         return jsonify({'success': False, 'message': 'Role must be professor or student'})
 
@@ -140,12 +149,12 @@ def create_user():
         return jsonify({'success': False, 'message': 'User ID already exists'})
 
     db.collection('users').document(user_id).set({
-        'user_id': user_id,
-        'name': name,
-        'email': email,
+        'user_id':    user_id,
+        'name':       name,
+        'email':      email,
         'department': department,
-        'role': role,
-        'password': hash_password(password),
+        'role':       role,
+        'password':   hash_password(password),
         'created_at': firestore.SERVER_TIMESTAMP
     })
     return jsonify({'success': True, 'message': f'{role.capitalize()} account created successfully'})
@@ -164,9 +173,9 @@ def delete_user(user_id):
 @app.route('/api/admin/stats', methods=['GET'])
 @login_required(role='admin')
 def admin_stats():
-    db = get_db()
+    db         = get_db()
     professors = len([d for d in db.collection('users').where('role', '==', 'professor').stream()])
-    students = len([d for d in db.collection('users').where('role', '==', 'student').stream()])
+    students   = len([d for d in db.collection('users').where('role', '==', 'student').stream()])
     classrooms = len([d for d in db.collection('classrooms').stream()])
     return jsonify({'professors': professors, 'students': students, 'classrooms': classrooms})
 
@@ -182,7 +191,7 @@ def professor_dashboard():
 @app.route('/api/professor/students', methods=['GET'])
 @login_required(role='professor')
 def get_all_students():
-    db = get_db()
+    db       = get_db()
     students = []
     for doc in db.collection('users').where('role', '==', 'student').stream():
         s = doc.to_dict()
@@ -195,13 +204,13 @@ def get_all_students():
 @app.route('/api/professor/classrooms', methods=['GET'])
 @login_required(role='professor')
 def get_professor_classrooms():
-    db = get_db()
-    prof_id = session['user_id']
+    db         = get_db()
+    prof_id    = session['user_id']
     classrooms = []
     for doc in db.collection('classrooms').where('professor_id', '==', prof_id).stream():
         c = doc.to_dict()
-        c['classroom_id'] = doc.id
-        assigns = list(db.collection('classrooms').document(doc.id).collection('assignments').stream())
+        c['classroom_id']    = doc.id
+        assigns              = list(db.collection('classrooms').document(doc.id).collection('assignments').stream())
         c['assignment_count'] = len(assigns)
         classrooms.append(c)
     return jsonify({'success': True, 'classrooms': classrooms})
@@ -210,9 +219,9 @@ def get_professor_classrooms():
 @app.route('/api/professor/create_classroom', methods=['POST'])
 @login_required(role='professor')
 def create_classroom():
-    db = get_db()
-    data = request.json
-    name = data.get('name', '').strip()
+    db          = get_db()
+    data        = request.json
+    name        = data.get('name', '').strip()
     student_ids = data.get('student_ids', [])
 
     if not name:
@@ -220,23 +229,44 @@ def create_classroom():
 
     prof_id = session['user_id']
     doc_ref = db.collection('classrooms').add({
-        'name': name,
-        'professor_id': prof_id,
-        'professor_name': session.get('name'),
-        'student_ids': student_ids,
-        'created_at': firestore.SERVER_TIMESTAMP
+        'name':             name,
+        'professor_id':     prof_id,
+        'professor_name':   session.get('name'),
+        'professor_email':  session.get('email'),
+        'student_ids':      student_ids,
+        'created_at':       firestore.SERVER_TIMESTAMP
     })
-    return jsonify({'success': True, 'message': 'Classroom created', 'classroom_id': doc_ref[1].id})
+    classroom_id = doc_ref[1].id
+
+    # ── Email each added student ──────────────────────────────────────────
+    if student_ids:
+        try:
+            for sid in student_ids:
+                sdoc = db.collection('users').document(sid).get()
+                if sdoc.exists:
+                    s = sdoc.to_dict()
+                    if s.get('email'):
+                        send_classroom_invite(
+                            app,
+                            student_email=s['email'],
+                            student_name=s.get('name', 'Student'),
+                            classroom_name=name,
+                            professor_name=session.get('name')
+                        )
+        except Exception as e:
+            print(f"[EMAIL WARN] Classroom invite emails failed: {e}")
+
+    return jsonify({'success': True, 'message': 'Classroom created', 'classroom_id': classroom_id})
 
 
 @app.route('/api/professor/classroom/<classroom_id>', methods=['GET'])
 @login_required(role='professor')
 def get_classroom(classroom_id):
-    db = get_db()
+    db  = get_db()
     doc = db.collection('classrooms').document(classroom_id).get()
     if not doc.exists:
         return jsonify({'success': False, 'message': 'Classroom not found'})
-    c = doc.to_dict()
+    c               = doc.to_dict()
     c['classroom_id'] = doc.id
 
     assignments = []
@@ -246,8 +276,10 @@ def get_classroom(classroom_id):
         subs = list(db.collection('classrooms').document(classroom_id)
                       .collection('assignments').document(adoc.id)
                       .collection('submissions').stream())
+        accepted             = [s for s in subs if s.to_dict().get('accepted')]
         a['submission_count'] = len(subs)
-        a['total_students'] = len(c.get('student_ids', []))
+        a['accepted_count']   = len(accepted)
+        a['total_students']   = len(c.get('student_ids', []))
         if a.get('deadline') and hasattr(a['deadline'], 'isoformat'):
             a['deadline'] = a['deadline'].isoformat()
         assignments.append(a)
@@ -269,11 +301,11 @@ def get_classroom(classroom_id):
 @app.route('/api/professor/create_assignment', methods=['POST'])
 @login_required(role='professor')
 def create_assignment():
-    db = get_db()
-    data = request.json
+    db           = get_db()
+    data         = request.json
     classroom_id = data.get('classroom_id')
-    title = data.get('title', '').strip()
-    description = data.get('description', '').strip()
+    title        = data.get('title', '').strip()
+    description  = data.get('description', '').strip()
     deadline_str = data.get('deadline', '')
 
     if not all([classroom_id, title, deadline_str]):
@@ -285,24 +317,51 @@ def create_assignment():
 
     try:
         deadline_dt = datetime.fromisoformat(deadline_str.replace('Z', '+00:00'))
-    except:
+    except Exception:
         return jsonify({'success': False, 'message': 'Invalid deadline format'})
 
     db.collection('classrooms').document(classroom_id).collection('assignments').add({
-        'title': title,
+        'title':       title,
         'description': description,
-        'deadline': deadline_dt,
+        'deadline':    deadline_dt,
         'classroom_id': classroom_id,
-        'created_by': session['user_id'],
-        'created_at': firestore.SERVER_TIMESTAMP
+        'created_by':  session['user_id'],
+        'created_at':  firestore.SERVER_TIMESTAMP
     })
+
+    # ── Email all students in the classroom ───────────────────────────────
+    classroom     = cdoc.to_dict()
+    student_ids   = classroom.get('student_ids', [])
+    classroom_name = classroom.get('name', 'Unknown Classroom')
+    deadline_str_nice = deadline_dt.strftime('%d %B %Y, %I:%M %p')
+
+    if student_ids:
+        try:
+            for sid in student_ids:
+                sdoc = db.collection('users').document(sid).get()
+                if sdoc.exists:
+                    s = sdoc.to_dict()
+                    if s.get('email'):
+                        send_new_assignment(
+                            app,
+                            student_email=s['email'],
+                            student_name=s.get('name', 'Student'),
+                            assignment_title=title,
+                            classroom_name=classroom_name,
+                            description=description,
+                            deadline_str=deadline_str_nice,
+                            professor_name=session.get('name')
+                        )
+        except Exception as e:
+            print(f"[EMAIL WARN] Assignment notification emails failed: {e}")
+
     return jsonify({'success': True, 'message': 'Assignment created successfully'})
 
 
 @app.route('/api/professor/submissions/<classroom_id>/<assignment_id>', methods=['GET'])
 @login_required(role='professor')
 def get_submissions(classroom_id, assignment_id):
-    db = get_db()
+    db          = get_db()
     submissions = []
     for doc in db.collection('classrooms').document(classroom_id)\
                   .collection('assignments').document(assignment_id)\
@@ -313,6 +372,30 @@ def get_submissions(classroom_id, assignment_id):
             s['submitted_at'] = s['submitted_at'].isoformat()
         submissions.append(s)
     return jsonify({'success': True, 'submissions': submissions})
+
+
+@app.route('/api/professor/accept_submission', methods=['POST'])
+@login_required(role='professor')
+def accept_submission():
+    db           = get_db()
+    data         = request.json
+    classroom_id = data.get('classroom_id')
+    assignment_id = data.get('assignment_id')
+    student_id   = data.get('student_id')
+
+    if not all([classroom_id, assignment_id, student_id]):
+        return jsonify({'success': False, 'message': 'Missing fields'})
+
+    sub_ref = db.collection('classrooms').document(classroom_id)\
+                .collection('assignments').document(assignment_id)\
+                .collection('submissions').document(student_id)
+
+    sub_doc = sub_ref.get()
+    if not sub_doc.exists:
+        return jsonify({'success': False, 'message': 'Submission not found'})
+
+    sub_ref.update({'accepted': True, 'accepted_at': firestore.SERVER_TIMESTAMP})
+    return jsonify({'success': True, 'message': 'Submission accepted'})
 
 
 # ─── STUDENT ROUTES ────────────────────────────────────────────────────────────
@@ -326,17 +409,17 @@ def student_dashboard():
 @app.route('/api/student/classrooms', methods=['GET'])
 @login_required(role='student')
 def get_student_classrooms():
-    db = get_db()
+    db         = get_db()
     student_id = session['user_id']
     classrooms = []
 
     for doc in db.collection('classrooms').where('student_ids', 'array_contains', student_id).stream():
-        c = doc.to_dict()
+        c               = doc.to_dict()
         c['classroom_id'] = doc.id
 
         assignments = []
         for adoc in db.collection('classrooms').document(doc.id).collection('assignments').stream():
-            a = adoc.to_dict()
+            a               = adoc.to_dict()
             a['assignment_id'] = adoc.id
 
             sub = db.collection('classrooms').document(doc.id)\
@@ -345,6 +428,8 @@ def get_student_classrooms():
             a['submitted'] = sub.exists
             if sub.exists:
                 sub_data = sub.to_dict()
+                a['accepted'] = sub_data.get('accepted', False)
+                a['pdf_url']  = sub_data.get('pdf_url', '')
                 if sub_data.get('submitted_at') and hasattr(sub_data['submitted_at'], 'isoformat'):
                     a['submitted_at'] = sub_data['submitted_at'].isoformat()
 
@@ -352,7 +437,7 @@ def get_student_classrooms():
                 a['deadline'] = a['deadline'].isoformat()
             assignments.append(a)
 
-        c['assignments'] = assignments
+        c['assignments']   = assignments
         c['pending_count'] = sum(1 for a in assignments if not a.get('submitted'))
         classrooms.append(c)
 
@@ -362,47 +447,93 @@ def get_student_classrooms():
 @app.route('/api/student/submit', methods=['POST'])
 @login_required(role='student')
 def submit_assignment():
-    db = get_db()
-    data = request.json
-    classroom_id = data.get('classroom_id')
-    assignment_id = data.get('assignment_id')
-    content = data.get('content', '').strip()
+    db           = get_db()
+    classroom_id = request.form.get('classroom_id')
+    assignment_id = request.form.get('assignment_id')
+    file         = request.files.get('file')
 
-    if not all([classroom_id, assignment_id, content]):
+    if not all([classroom_id, assignment_id, file]):
         return jsonify({'success': False, 'message': 'All fields required'})
+
+    if file.content_length and file.content_length > 10 * 1024 * 1024:
+        return jsonify({'success': False, 'message': 'File must be under 10 MB'})
 
     student_id = session['user_id']
 
+    # Check assignment & deadline
     adoc = db.collection('classrooms').document(classroom_id)\
               .collection('assignments').document(assignment_id).get()
     if not adoc.exists:
         return jsonify({'success': False, 'message': 'Assignment not found'})
 
     assignment = adoc.to_dict()
-    deadline = assignment.get('deadline')
+    deadline   = assignment.get('deadline')
     if deadline:
-        if hasattr(deadline, 'astimezone'):
-            deadline_dt = deadline.astimezone(timezone.utc)
-        else:
-            deadline_dt = deadline
+        deadline_dt = deadline.astimezone(timezone.utc) if hasattr(deadline, 'astimezone') else deadline
         if datetime.now(timezone.utc) > deadline_dt:
             return jsonify({'success': False, 'message': 'Deadline has passed. Submission not accepted.'})
 
+    # Check duplicate
     existing = db.collection('classrooms').document(classroom_id)\
                   .collection('assignments').document(assignment_id)\
                   .collection('submissions').document(student_id).get()
     if existing.exists:
         return jsonify({'success': False, 'message': 'You have already submitted this assignment'})
 
+    # ── Upload to Cloudinary ───────────────────────────────────────────────
+    try:
+        filename  = file.filename or 'submission'
+        ext       = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'pdf'
+        is_image  = ext in ('png', 'jpg', 'jpeg', 'gif', 'webp')
+        res_type  = 'image' if is_image else 'raw'
+
+        upload_result = cloudinary.uploader.upload(
+            file,
+            resource_type=res_type,
+            folder=f'assignments/{classroom_id}/{assignment_id}',
+            public_id=f'{student_id}_{datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")}',
+            overwrite=True
+        )
+        pdf_url = upload_result.get('secure_url', '')
+    except Exception as e:
+        print(f"[CLOUDINARY ERROR] {e}")
+        return jsonify({'success': False, 'message': f'File upload failed: {str(e)}'})
+
+    # ── Save submission to Firestore ───────────────────────────────────────
     db.collection('classrooms').document(classroom_id)\
       .collection('assignments').document(assignment_id)\
       .collection('submissions').document(student_id).set({
-        'student_id': student_id,
-        'student_name': session.get('name'),
-        'content': content,
-        'submitted_at': firestore.SERVER_TIMESTAMP
+        'student_id':    student_id,
+        'student_name':  session.get('name'),
+        'student_email': session.get('email'),
+        'pdf_url':       pdf_url,
+        'filename':      filename,
+        'accepted':      False,
+        'submitted_at':  firestore.SERVER_TIMESTAMP
     })
-    return jsonify({'success': True, 'message': 'Assignment submitted successfully! ✓'})
+
+    # ── Email professor ────────────────────────────────────────────────────
+    try:
+        cdoc     = db.collection('classrooms').document(classroom_id).get()
+        if cdoc.exists:
+            classroom      = cdoc.to_dict()
+            prof_email     = classroom.get('professor_email')
+            prof_name      = classroom.get('professor_name', 'Professor')
+            classroom_name = classroom.get('name', 'Unknown Classroom')
+            if prof_email:
+                send_submission_notify(
+                    app,
+                    professor_email=prof_email,
+                    professor_name=prof_name,
+                    student_name=session.get('name'),
+                    assignment_title=assignment.get('title', 'Assignment'),
+                    classroom_name=classroom_name,
+                    pdf_url=pdf_url
+                )
+    except Exception as e:
+        print(f"[EMAIL WARN] Professor notify failed: {e}")
+
+    return jsonify({'success': True, 'message': 'Assignment submitted successfully! ✓', 'pdf_url': pdf_url})
 
 
 # ─── APP STARTUP ────────────────────────────────────────────────────────────
