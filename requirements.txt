@@ -6,3 +6,4 @@ python-dotenv==1.0.1
 gunicorn==22.0.0
 requests==2.32.3
 pytz==2024.1
+cloudinary==1.40.0
